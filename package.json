@@ -1,5 +1,5 @@
 {
-  "name": "@vistastream/capacitor-hybrid-player",
+  "name": "vistastream-capacitor-hybrid-player",
   "version": "0.1.0",
   "description": "Capacitor 6 plugin that uses AVPlayer first and MobileVLCKit as a compatibility fallback on iOS.",
   "type": "module",
