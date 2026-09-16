@@ -1,0 +1,46 @@
+{
+  "name": "@vistastream/capacitor-hybrid-player",
+  "version": "0.1.0",
+  "description": "Capacitor 6 plugin that uses AVPlayer first and MobileVLCKit as a compatibility fallback on iOS.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/",
+    "ios/",
+    "VistaStreamHybridPlayer.podspec",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "verify": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run verify && npm run build"
+  },
+  "keywords": [
+    "capacitor",
+    "ios",
+    "video",
+    "vlc",
+    "vlckit",
+    "iptv"
+  ],
+  "author": "VistaStream",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jcarranza01/vistastream-capacitor-hybrid-player.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Jcarranza01/vistastream-capacitor-hybrid-player/issues"
+  },
+  "homepage": "https://github.com/Jcarranza01/vistastream-capacitor-hybrid-player#readme",
+  "peerDependencies": {
+    "@capacitor/core": "^6.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/core": "^6.0.0",
+    "typescript": "^5.4.0"
+  }
+}
