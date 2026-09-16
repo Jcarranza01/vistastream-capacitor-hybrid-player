@@ -9,7 +9,7 @@ This repository contains the first integration scaffold. It is not yet published
 ## Installation after npm publication
 
 ```bash
-npm install @vistastream/capacitor-hybrid-player
+npm install vistastream-capacitor-hybrid-player
 npx cap sync ios
 ```
 
@@ -18,7 +18,7 @@ The current native dependency is `MobileVLCKit ~> 3.4.0`. The host app must use 
 ## Usage
 
 ```ts
-import { VistaStreamHybridPlayer } from '@vistastream/capacitor-hybrid-player';
+import { VistaStreamHybridPlayer } from 'vistastream-capacitor-hybrid-player';
 
 await VistaStreamHybridPlayer.open({
   url: securePlaybackUrl,
