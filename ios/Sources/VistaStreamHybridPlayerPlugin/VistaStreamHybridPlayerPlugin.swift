@@ -134,6 +134,10 @@ struct HybridPlayerOptions {
     let connectionTimeoutSeconds: Double
     let live: Bool
 
+    func header(named name: String) -> String? {
+        headers.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
+    }
+
     var requestHeaders: [String: String] {
         var result = headers
         func contains(_ name: String) -> Bool {
