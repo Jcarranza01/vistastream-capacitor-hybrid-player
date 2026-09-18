@@ -14,11 +14,13 @@ final class HybridPlayerViewController: UIViewController, VLCMediaPlayerDelegate
     private var avController: AVPlayerViewController?
     private var avStatusObservation: NSKeyValueObservation?
     private var avTimeObserver: Any?
+    private var avTimeoutWorkItem: DispatchWorkItem?
     private var vlcPlayer: VLCMediaPlayer?
     private var state = "loading"
     private var lastSeconds = 0.0
     private var duration = 0.0
     private var exiting = false
+    private var attemptedEngines: [PlaybackEngine] = []
 
     init(options: HybridPlayerOptions) {
         self.options = options
@@ -54,7 +56,13 @@ final class HybridPlayerViewController: UIViewController, VLCMediaPlayerDelegate
     }
 
     var snapshot: [String: Any] {
-        ["engine": activeEngine.rawValue, "state": state, "seconds": lastSeconds, "duration": duration]
+        [
+            "engine": activeEngine.rawValue,
+            "state": state,
+            "seconds": lastSeconds,
+            "duration": duration,
+            "attemptedEngines": attemptedEngines.map(\.rawValue)
+        ]
     }
 
     func play() {
@@ -97,13 +105,20 @@ final class HybridPlayerViewController: UIViewController, VLCMediaPlayerDelegate
     private func start(engine: PlaybackEngine) {
         cleanup(keepAudioSession: true)
         activeEngine = engine
+        if !attemptedEngines.contains(engine) { attemptedEngines.append(engine) }
         state = "loading"
         emit("stateChange")
         engine == .vlc ? startVLC() : startAVPlayer()
     }
 
     private func startAVPlayer() {
-        let item = AVPlayerItem(url: options.url)
+        let asset = AVURLAsset(
+            url: options.url,
+            options: options.requestHeaders.isEmpty
+                ? nil
+                : ["AVURLAssetHTTPHeaderFieldsKey": options.requestHeaders]
+        )
+        let item = AVPlayerItem(asset: asset)
         let player = AVPlayer(playerItem: item)
         let controller = AVPlayerViewController()
         controller.player = player
@@ -119,9 +134,13 @@ final class HybridPlayerViewController: UIViewController, VLCMediaPlayerDelegate
         avStatusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] observed, _ in
             DispatchQueue.main.async {
                 guard let self else { return }
-                if observed.status == .failed && self.options.requestedEngine == .auto {
-                    self.start(engine: .vlc)
+                if observed.status == .failed {
+                    self.recoverFromAVPlayer(
+                        code: "avplayer_failed",
+                        message: observed.error?.localizedDescription ?? "AVPlayer could not play this stream."
+                    )
                 } else if observed.status == .readyToPlay {
+                    self.avTimeoutWorkItem?.cancel()
                     self.duration = observed.duration.seconds.isFinite ? observed.duration.seconds : 0
                     if self.options.startAt > 0 { self.seek(seconds: self.options.startAt) }
                     player.play()
@@ -129,24 +148,83 @@ final class HybridPlayerViewController: UIViewController, VLCMediaPlayerDelegate
                 }
             }
         }
-        avTimeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 2), queue: .main) { [weak self] time in
+
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self, self.activeEngine == .avplayer, self.state == "loading" else { return }
+            self.recoverFromAVPlayer(
+                code: "connection_timeout",
+                message: "AVPlayer did not become ready before the connection timeout."
+            )
+        }
+        avTimeoutWorkItem = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + options.connectionTimeoutSeconds, execute: timeout)
+
+        avTimeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 1, preferredTimescale: 2),
+            queue: .main
+        ) { [weak self] time in
             guard let self else { return }
             self.lastSeconds = max(0, time.seconds.isFinite ? time.seconds : 0)
             self.emit("progress")
         }
-        NotificationCenter.default.addObserver(self, selector: #selector(avEnded), name: .AVPlayerItemDidPlayToEndTime, object: item)
-        NotificationCenter.default.addObserver(self, selector: #selector(avFailed), name: .AVPlayerItemFailedToPlayToEndTime, object: item)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(avEnded),
+            name: .AVPlayerItemDidPlayToEndTime,
+            object: item
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(avFailed),
+            name: .AVPlayerItemFailedToPlayToEndTime,
+            object: item
+        )
     }
 
     private func startVLC() {
         let player = VLCMediaPlayer()
         player.delegate = self
         player.drawable = videoView
-        player.media = VLCMedia(url: options.url)
+
+        let media = VLCMedia(url: options.url)
+        var mediaOptions: [AnyHashable: Any] = [
+            "network-caching": options.networkCachingMs,
+            "live-caching": options.networkCachingMs,
+            "http-reconnect": true
+        ]
+        if let value = options.userAgent ?? options.header(named: "User-Agent"), !value.isEmpty {
+            mediaOptions["http-user-agent"] = value
+        }
+        if let value = options.referrer ?? options.header(named: "Referer"), !value.isEmpty {
+            mediaOptions["http-referrer"] = value
+        }
+        if let value = options.cookies ?? options.header(named: "Cookie"), !value.isEmpty {
+            mediaOptions["http-cookie"] = value
+            mediaOptions["http-forward-cookies"] = true
+        }
+        media.addOptions(mediaOptions)
+        player.media = media
         vlcPlayer = player
         player.play()
+
         if options.startAt > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.seek(seconds: self?.options.startAt ?? 0) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.seek(seconds: self?.options.startAt ?? 0)
+            }
+        }
+    }
+
+    private func recoverFromAVPlayer(code: String, message: String) {
+        avTimeoutWorkItem?.cancel()
+        if options.requestedEngine == .auto {
+            var payload = snapshot
+            payload["message"] = message
+            payload["errorCode"] = code
+            payload["recoverable"] = true
+            onEvent?("stateChange", payload)
+            start(engine: .vlc)
+        } else {
+            updateState("error", message: message, errorCode: code, recoverable: false)
         }
     }
 
@@ -155,9 +233,12 @@ final class HybridPlayerViewController: UIViewController, VLCMediaPlayerDelegate
         emit("exit")
     }
 
-    @objc private func avFailed() {
-        if options.requestedEngine == .auto { start(engine: .vlc) }
-        else { updateState("error", message: "AVPlayer could not play this stream.") }
+    @objc private func avFailed(_ notification: Notification) {
+        let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+        recoverFromAVPlayer(
+            code: "avplayer_failed",
+            message: error?.localizedDescription ?? "AVPlayer could not finish this stream."
+        )
     }
 
     func mediaPlayerStateChanged(_ aNotification: Notification) {
@@ -170,7 +251,13 @@ final class HybridPlayerViewController: UIViewController, VLCMediaPlayerDelegate
         case .playing: updateState("playing")
         case .paused: updateState("paused")
         case .ended: updateState("ended"); emit("exit")
-        case .error: updateState("error", message: "VLCKit could not play this stream.")
+        case .error:
+            updateState(
+                "error",
+                message: "The provider stream failed in AVPlayer and MobileVLCKit.",
+                errorCode: "vlc_failed",
+                recoverable: false
+            )
         default: break
         }
     }
@@ -182,20 +269,36 @@ final class HybridPlayerViewController: UIViewController, VLCMediaPlayerDelegate
         emit("progress")
     }
 
-    private func updateState(_ value: String, message: String? = nil) {
+    private func updateState(
+        _ value: String,
+        message: String? = nil,
+        errorCode: String? = nil,
+        recoverable: Bool? = nil
+    ) {
         state = value
-        emit("stateChange", message: message)
+        emit("stateChange", message: message, errorCode: errorCode, recoverable: recoverable)
     }
 
-    private func emit(_ name: String, message: String? = nil) {
+    private func emit(
+        _ name: String,
+        message: String? = nil,
+        errorCode: String? = nil,
+        recoverable: Bool? = nil
+    ) {
         var payload = snapshot
         if let message { payload["message"] = message }
+        if let errorCode { payload["errorCode"] = errorCode }
+        if let recoverable { payload["recoverable"] = recoverable }
         onEvent?(name, payload)
     }
 
     private func cleanup(keepAudioSession: Bool = false) {
+        avTimeoutWorkItem?.cancel()
+        avTimeoutWorkItem = nil
         avStatusObservation = nil
-        if let observer = avTimeObserver, let player = avController?.player { player.removeTimeObserver(observer) }
+        if let observer = avTimeObserver, let player = avController?.player {
+            player.removeTimeObserver(observer)
+        }
         avTimeObserver = nil
         avController?.player?.pause()
         avController?.willMove(toParent: nil)
@@ -206,7 +309,9 @@ final class HybridPlayerViewController: UIViewController, VLCMediaPlayerDelegate
         vlcPlayer?.delegate = nil
         vlcPlayer = nil
         NotificationCenter.default.removeObserver(self)
-        if !keepAudioSession { try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
+        if !keepAudioSession {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 
     private func configureAudioSession() {
@@ -217,7 +322,9 @@ final class HybridPlayerViewController: UIViewController, VLCMediaPlayerDelegate
 
     private static func initialEngine(for options: HybridPlayerOptions) -> PlaybackEngine {
         if options.requestedEngine != .auto { return options.requestedEngine }
-        return ["mkv", "avi", "ts", "mpeg", "mpg", "webm"].contains(options.url.pathExtension.lowercased()) ? .vlc : .avplayer
+        return ["mkv", "avi", "ts", "mpeg", "mpg", "webm"].contains(options.url.pathExtension.lowercased())
+            ? .vlc
+            : .avplayer
     }
 
     deinit { cleanup() }

@@ -23,17 +23,33 @@ public final class VistaStreamHybridPlayerPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc public func open(_ call: CAPPluginCall) {
         guard let rawURL = call.getString("url"), let url = URL(string: rawURL) else {
-            call.reject("A valid playback URL is required.")
+            call.reject("A valid playback URL is required.", "invalid_url")
             return
         }
 
+        var headers: [String: String] = [:]
+        for (name, value) in call.getObject("headers") ?? [:] {
+            if let stringValue = value as? String, !stringValue.isEmpty {
+                headers[name] = stringValue
+            }
+        }
+
         let requested = PlaybackEngine(rawValue: call.getString("engine") ?? "auto") ?? .auto
+        let live = call.getBool("live") ?? false
+        let defaultCache = live ? 2500 : 1500
         let options = HybridPlayerOptions(
             url: url,
             title: call.getString("title") ?? "",
             startAt: max(0, call.getDouble("startAt") ?? 0),
             requestedEngine: requested,
-            backgroundEnabled: call.getBool("backgroundEnabled") ?? true
+            backgroundEnabled: call.getBool("backgroundEnabled") ?? true,
+            headers: headers,
+            userAgent: call.getString("userAgent"),
+            referrer: call.getString("referrer"),
+            cookies: call.getString("cookies"),
+            networkCachingMs: min(15000, max(250, call.getInt("networkCachingMs") ?? defaultCache)),
+            connectionTimeoutSeconds: min(60, max(5, call.getDouble("connectionTimeoutSeconds") ?? 15)),
+            live: live
         )
 
         DispatchQueue.main.async { [weak self] in
@@ -110,4 +126,26 @@ struct HybridPlayerOptions {
     let startAt: Double
     let requestedEngine: PlaybackEngine
     let backgroundEnabled: Bool
+    let headers: [String: String]
+    let userAgent: String?
+    let referrer: String?
+    let cookies: String?
+    let networkCachingMs: Int
+    let connectionTimeoutSeconds: Double
+    let live: Bool
+
+    func header(named name: String) -> String? {
+        headers.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
+    }
+
+    var requestHeaders: [String: String] {
+        var result = headers
+        func contains(_ name: String) -> Bool {
+            result.keys.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+        }
+        if let userAgent, !userAgent.isEmpty, !contains("User-Agent") { result["User-Agent"] = userAgent }
+        if let referrer, !referrer.isEmpty, !contains("Referer") { result["Referer"] = referrer }
+        if let cookies, !cookies.isEmpty, !contains("Cookie") { result["Cookie"] = cookies }
+        return result
+    }
 }
