@@ -1,7 +1,7 @@
 {
   "name": "vistastream-capacitor-hybrid-player",
-  "version": "0.1.0",
-  "description": "Capacitor 6 plugin that uses AVPlayer first and MobileVLCKit as a compatibility fallback on iOS.",
+  "version": "0.2.0",
+  "description": "Capacitor 6 plugin with AVPlayer-first playback, MobileVLCKit fallback, and IPTV request compatibility on iOS.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
